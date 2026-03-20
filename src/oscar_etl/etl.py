@@ -267,16 +267,26 @@ def discover_sessions(datalog_dir, day_boundary=12):
     csl_indices = [i for i, (_, ft, _) in enumerate(all_files) if ft == "CSL"]
     sessions_by_date = {}
 
-    # Handle orphaned PLD files before the first CSL
+    # Handle orphaned files before the first CSL (partial backups)
     first_csl = csl_indices[0] if csl_indices else len(all_files)
+    orphan_eve_files = []
+    orphan_pld_files = []
     for i in range(first_csl):
         ts_dt, ft, path = all_files[i]
         if ft == "PLD":
-            date = evening_date(ts_dt, day_boundary)
+            orphan_pld_files.append((ts_dt, path))
+        elif ft == "EVE":
+            orphan_eve_files.append(path)
+    if orphan_pld_files:
+        orphan_shared = {}
+        if orphan_eve_files:
+            orphan_shared["EVE"] = orphan_eve_files
+        for pld_dt, pld_path in orphan_pld_files:
+            date = evening_date(pld_dt, day_boundary)
             session = {
                 "date": date,
-                "session_start": ts_dt.isoformat(),
-                "files": {"PLD": path},
+                "session_start": pld_dt.isoformat(),
+                "files": {"PLD": pld_path, **{k: v for k, v in orphan_shared.items()}},
             }
             if date not in sessions_by_date:
                 sessions_by_date[date] = []
@@ -410,7 +420,12 @@ def parse_and_cache_edfs(sessions_by_date, day_boundary=12):
 # ---------------------------------------------------------------------------
 
 def release_signal_data(sessions_by_date):
-    """Release cached PLD signal data to free memory before timeseries pass."""
+    """Release cached PLD signal data to free memory before timeseries pass.
+
+    IMPORTANT: Must be called AFTER etl_daily(), which needs the raw signal
+    data to recompute combined statistics. etl_timeseries() re-parses PLD
+    files from disk so it does not need the cached data.
+    """
     for date in sessions_by_date:
         for session in sessions_by_date[date]:
             pld_data = session.get("pld_data")
@@ -468,7 +483,6 @@ def etl_sessions(sessions_by_date, day_boundary=12):
             eve_key = id(eve_data) if eve_data else None
             if eve_key:
                 global_pld_ranges.setdefault(eve_key, []).append((pld_start, pld_end_ts))
-            eve_data = session.get("eve_data")
             if eve_data:
                 for ann in eve_data["annotations"]:
                     col = EVENT_MAP.get(ann["text"])
