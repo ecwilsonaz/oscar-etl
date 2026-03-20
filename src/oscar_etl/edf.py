@@ -7,6 +7,7 @@ format directly. This module has no dependencies beyond the Python stdlib.
 import re
 import struct
 from datetime import datetime
+from pathlib import Path
 
 
 def safe_float(s):
@@ -43,6 +44,7 @@ def parse_edf(path):
         annotations: list[dict] — each with "onset", "duration", "text"
         warnings: list[str] — any parse warnings
     """
+    path = Path(path)
     warnings = []
     with open(path, "rb") as f:
         raw = f.read()
@@ -139,9 +141,10 @@ def parse_edf(path):
         i for i, l in enumerate(labels) if l == "EDF Annotations"
     }
     annotation_regex = re.compile(
-        r"\+(\d+(?:\.\d+)?)(?:\x15(\d+(?:\.\d+)?))?\x14([^\x14]*)\x14"
+        r"[+-](\d+(?:\.\d+)?)(?:\x15(\d+(?:\.\d+)?))?\x14([^\x14]*)\x14"
     )
 
+    records_parsed = 0
     for rec in range(actual_records):
         rec_offset = data_offset
         for i in range(ns):
@@ -182,12 +185,18 @@ def parse_edf(path):
             rec_offset += byte_count
         else:
             data_offset = rec_offset
+            records_parsed += 1
             continue
+        # Truncated record — stop and warn
+        if records_parsed < actual_records:
+            warnings.append(
+                f"Truncated file {path.name}: parsed {records_parsed}/{actual_records} records"
+            )
         break
 
     return {
         "start": start,
-        "num_records": actual_records,
+        "num_records": records_parsed,
         "record_duration": record_duration,
         "signals": signals,
         "annotations": annotations,

@@ -145,17 +145,22 @@ def find_oscar_dir(oscar_dir=None):
             if resolved.is_dir():
                 return resolved
         except PermissionError:
-            if candidate.is_symlink():
-                target = candidate.resolve()
-                if target.is_dir():
-                    return target
+            try:
+                if candidate.is_symlink():
+                    target = Path(os.readlink(candidate))
+                    if not target.is_absolute():
+                        target = candidate.parent / target
+                    if target.is_dir():
+                        return target
+            except (PermissionError, OSError):
+                pass
             continue
 
     if sys.platform == "darwin":
         print(
             "Error: Could not find OSCAR_Data directory.\n\n"
-            "  If you haven't set up data access yet, see the README:\n"
-            "  https://github.com/yourname/oscar-etl#macos-setup\n\n"
+            "  If you haven't set up data access yet, see the macOS Setup\n"
+            "  section in the README.\n\n"
             "  Or specify the path directly:\n"
             "    oscar-etl --oscar-dir /path/to/OSCAR_Data",
             file=sys.stderr,
@@ -453,17 +458,16 @@ def etl_sessions(sessions_by_date):
             }
             rows.append(row)
 
-        # Unattributed events
-        seen_eve_paths = set()
-        eve_list = []
-        for session in date_sessions:
+    # Second pass: find unattributed events using the fully-built global_pld_ranges
+    seen_eve_paths = set()
+    for date in sorted(sessions_by_date):
+        for session in sessions_by_date[date]:
             eve_data = session.get("eve_data")
             eve_path = session["files"].get("EVE")
-            if eve_data and eve_path and eve_path not in seen_eve_paths:
-                seen_eve_paths.add(eve_path)
-                eve_list.append((eve_data, eve_path))
+            if not eve_data or not eve_path or eve_path in seen_eve_paths:
+                continue
+            seen_eve_paths.add(eve_path)
 
-        for eve_data, eve_path in eve_list:
             all_ranges = global_pld_ranges.get(eve_path, [])
             for ann in eve_data["annotations"]:
                 col = EVENT_MAP.get(ann["text"])
@@ -626,7 +630,12 @@ def etl_timeseries(sessions_by_date, output_path):
                 if spr and spr > 0 and pld["record_duration"] > 0:
                     sample_interval = pld["record_duration"] / spr
                 else:
-                    sample_interval = 2
+                    sample_interval = 2  # fallback for unknown sample rate
+                    print(
+                        f"  WARN: Could not determine sample interval for session "
+                        f"{session_start}, defaulting to 2s",
+                        file=sys.stderr,
+                    )
 
                 for i in range(n_samples):
                     ts = pld_start + timedelta(seconds=i * sample_interval)

@@ -36,13 +36,16 @@ def pick_profile(profiles):
     console.print()
     while True:
         try:
-            choice = input(f"  Which profile? [1]: ").strip()
+            choice = input("  Which profile? [1]: ").strip()
             if not choice:
                 return profiles[0]
             idx = int(choice) - 1
             if 0 <= idx < len(profiles):
                 return profiles[idx]
-        except (ValueError, EOFError):
+        except EOFError:
+            console.print("  Non-interactive mode, selecting first profile.")
+            return profiles[0]
+        except ValueError:
             pass
         console.print("  Invalid choice, try again.")
 
@@ -78,6 +81,8 @@ def build_parser():
         "--day-boundary",
         type=int,
         default=12,
+        choices=range(0, 24),
+        metavar="HOUR",
         help="Hour (0-23) that separates sleep nights (default: 12)",
     )
     parser.add_argument(
