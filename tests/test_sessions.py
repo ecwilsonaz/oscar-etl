@@ -59,6 +59,31 @@ class TestDiscoverSessions:
         assert "2026-03-15" in sessions
 
 
+class TestEtlSessions:
+    def test_unattributed_events_counted(self, tmp_oscar_dir):
+        """Events outside PLD time range appear in unattributed_events."""
+        from tests.conftest import build_edf
+        from oscar_etl.etl import etl_sessions
+        _, datalog_dir = tmp_oscar_dir
+        year_dir = datalog_dir / "2026"
+        year_dir.mkdir()
+        # CSL + EVE with event at onset=9999 (way outside PLD range) + short PLD
+        build_edf(year_dir / "20260315_223000_CSL.edf", signals={"Press.2s": [0.0]})
+        build_edf(
+            year_dir / "20260315_223005_EVE.edf",
+            signals={},
+            annotations=[{"onset": 9999.0, "duration": 10.0, "text": "Hypopnea"}],
+        )
+        build_edf(year_dir / "20260315_223010_PLD.edf", signals={"Press.2s": [10.0, 11.0]})
+        from oscar_etl.etl import discover_sessions, parse_and_cache_edfs
+        sessions = discover_sessions(datalog_dir)
+        sessions, _ = parse_and_cache_edfs(sessions)
+        _, unattributed = etl_sessions(sessions)
+        # The event at onset=9999 should be unattributed since it's way outside the PLD range
+        total_unattr = sum(sum(v.values()) for v in unattributed.values())
+        assert total_unattr >= 1
+
+
 class TestParseAndCacheEdfs:
     def test_populates_pld_and_eve_data(self, tmp_oscar_dir):
         _, datalog_dir = tmp_oscar_dir

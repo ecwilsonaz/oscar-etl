@@ -58,6 +58,38 @@ class TestCliEndToEnd:
         assert (output_dir / "cpap_daily.csv").exists()
         assert (output_dir / "cpap_events.csv").exists()
 
+    def test_main_module_invocation(self, tmp_path):
+        """Verify python -m oscar_etl works."""
+        oscar_dir = self._setup_data(tmp_path)
+        output_dir = tmp_path / "output"
+        result = subprocess.run(
+            [
+                sys.executable, "-m", "oscar_etl",
+                "--oscar-dir", str(oscar_dir),
+                "--output-dir", str(output_dir),
+                "--skip-timeseries",
+            ],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        assert (output_dir / "cpap_sessions.csv").exists()
+
+    def test_day_boundary_flag(self, tmp_path):
+        """Verify --day-boundary is accepted."""
+        oscar_dir = self._setup_data(tmp_path)
+        output_dir = tmp_path / "output"
+        result = subprocess.run(
+            [
+                sys.executable, "-m", "oscar_etl.cli",
+                "--oscar-dir", str(oscar_dir),
+                "--output-dir", str(output_dir),
+                "--skip-timeseries",
+                "--day-boundary", "6",
+            ],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+
     def test_timeseries_generated_by_default(self, tmp_path):
         oscar_dir = self._setup_data(tmp_path)
         output_dir = tmp_path / "output"
