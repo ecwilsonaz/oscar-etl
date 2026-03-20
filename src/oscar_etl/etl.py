@@ -347,3 +347,302 @@ def parse_and_cache_edfs(sessions_by_date, day_boundary=12):
     sessions_by_date.update(rebuilt)
 
     return warnings
+
+
+# ---------------------------------------------------------------------------
+# CSV writer
+# ---------------------------------------------------------------------------
+
+def write_csv(path, fieldnames, rows):
+    """Write rows to CSV, stripping internal keys (prefixed with _)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    clean_rows = [{k: v for k, v in row.items() if not k.startswith("_")} for row in rows]
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(clean_rows)
+
+
+# ---------------------------------------------------------------------------
+# Session processing
+# ---------------------------------------------------------------------------
+
+def etl_sessions(sessions_by_date):
+    """Parse each session's EDF files and produce session rows.
+
+    Returns (rows, unattributed_events).
+    """
+    rows = []
+    unattributed_events = {}
+    global_pld_ranges = {}
+
+    for date in sorted(sessions_by_date):
+        date_sessions = sessions_by_date[date]
+
+        for session in date_sessions:
+            pld_data = session.get("pld_data")
+            if pld_data is None:
+                continue
+
+            pld_dur = pld_data["num_records"] * pld_data["record_duration"]
+            if pld_dur <= 0:
+                continue
+
+            duration_seconds = pld_dur
+            pld_start = pld_data["start"]
+            session_start = pld_start.isoformat()
+            session_end = (pld_start + timedelta(seconds=pld_dur)).isoformat()
+
+            counts = {col: 0 for col in EVENT_MAP.values()}
+            pld_end_ts = pld_start + timedelta(seconds=pld_dur)
+            eve_path = session["files"].get("EVE")
+            if eve_path:
+                global_pld_ranges.setdefault(eve_path, []).append((pld_start, pld_end_ts))
+            eve_data = session.get("eve_data")
+            if eve_data:
+                for ann in eve_data["annotations"]:
+                    col = EVENT_MAP.get(ann["text"])
+                    if not col:
+                        continue
+                    event_dt = eve_data["start"] + timedelta(seconds=ann["onset"])
+                    if pld_start <= event_dt < pld_end_ts:
+                        counts[col] += 1
+
+            pressure_data, leak_data, resp_data = [], [], []
+            tidal_data, minvent_data = [], []
+
+            for label, sig in pld_data["signals"].items():
+                col_name = PLD_SIGNAL_MAP.get(label)
+                if col_name == "pressure":
+                    pressure_data.extend(sig["data"])
+                elif col_name == "leak":
+                    leak_data.extend(sig["data"])
+                elif col_name == "resp_rate":
+                    resp_data.extend(sig["data"])
+                elif col_name == "tidal_vol":
+                    tidal_data.extend(sig["data"])
+                elif col_name == "minute_vent":
+                    minvent_data.extend(sig["data"])
+
+            filt_pressure = nonneg_values(pressure_data)
+            filt_leak = nonneg_values(leak_data)
+            filt_resp = positive_values(resp_data)
+            filt_tidal = positive_values(tidal_data)
+            filt_minvent = positive_values(minvent_data)
+
+            hours = duration_seconds / 3600.0
+            total_events = counts["ca_count"] + counts["oa_count"] + counts["h_count"] + counts["ua_count"]
+            ahi = round(total_events / hours, 3) if hours > 0 else 0.0
+
+            row = {
+                "date": date,
+                "session_start": session_start,
+                "session_end": session_end,
+                "duration_minutes": round(duration_seconds / 60.0, 1),
+                "_duration_seconds": duration_seconds,
+                "ahi": ahi,
+                **counts,
+                "pressure_median": round(median(filt_pressure), 2) if filt_pressure else "",
+                "pressure_95": round(percentile(filt_pressure, 95), 2) if filt_pressure else "",
+                "pressure_995": round(percentile(filt_pressure, 99.5), 2) if filt_pressure else "",
+                "leak_median": round(median(filt_leak), 2) if filt_leak else "",
+                "leak_95": round(percentile(filt_leak, 95), 2) if filt_leak else "",
+                "resp_rate_median": round(median(filt_resp), 2) if filt_resp else "",
+                "tidal_vol_median": round(median(filt_tidal), 2) if filt_tidal else "",
+                "minute_vent_median": round(median(filt_minvent), 2) if filt_minvent else "",
+            }
+            rows.append(row)
+
+        # Unattributed events
+        seen_eve_paths = set()
+        eve_list = []
+        for session in date_sessions:
+            eve_data = session.get("eve_data")
+            eve_path = session["files"].get("EVE")
+            if eve_data and eve_path and eve_path not in seen_eve_paths:
+                seen_eve_paths.add(eve_path)
+                eve_list.append((eve_data, eve_path))
+
+        for eve_data, eve_path in eve_list:
+            all_ranges = global_pld_ranges.get(eve_path, [])
+            for ann in eve_data["annotations"]:
+                col = EVENT_MAP.get(ann["text"])
+                if not col:
+                    continue
+                event_dt = eve_data["start"] + timedelta(seconds=ann["onset"])
+                attributed = any(s <= event_dt < e for s, e in all_ranges)
+                if not attributed:
+                    if date not in unattributed_events:
+                        unattributed_events[date] = {c: 0 for c in EVENT_MAP.values()}
+                    unattributed_events[date][col] += 1
+
+    rows.sort(key=lambda r: (r["date"], r["session_start"]))
+    return rows, unattributed_events
+
+
+def etl_daily(session_rows, sessions_by_date, unattributed_events=None):
+    """Aggregate session rows into daily summary rows."""
+    if unattributed_events is None:
+        unattributed_events = {}
+
+    by_date = {}
+    for row in session_rows:
+        by_date.setdefault(row["date"], []).append(row)
+
+    daily_rows = []
+    for date in sorted(by_date):
+        sessions = by_date[date]
+        start = min(s["session_start"] for s in sessions)
+        end = max(s["session_end"] for s in sessions)
+        total_seconds = sum(s["_duration_seconds"] for s in sessions)
+        total_minutes = total_seconds / 60.0
+
+        ca = sum(s["ca_count"] for s in sessions)
+        oa = sum(s["oa_count"] for s in sessions)
+        h = sum(s["h_count"] for s in sessions)
+        ua = sum(s["ua_count"] for s in sessions)
+        arousal = sum(s["arousal_count"] for s in sessions)
+
+        unattr = unattributed_events.get(date)
+        if unattr:
+            ca += unattr.get("ca_count", 0)
+            oa += unattr.get("oa_count", 0)
+            h += unattr.get("h_count", 0)
+            ua += unattr.get("ua_count", 0)
+            arousal += unattr.get("arousal_count", 0)
+
+        hours = total_minutes / 60.0
+        total_events = ca + oa + h + ua
+        ahi = round(total_events / hours, 3) if hours > 0 else 0.0
+
+        # Recompute stats from raw signals across all sessions
+        combined = {"pressure": [], "leak": [], "resp_rate": [], "tidal_vol": [], "minute_vent": []}
+        for sess in sessions_by_date.get(date, []):
+            pld_data = sess.get("pld_data")
+            if not pld_data:
+                continue
+            for label, sig in pld_data["signals"].items():
+                col_name = PLD_SIGNAL_MAP.get(label)
+                if col_name in combined:
+                    combined[col_name].extend(sig["data"])
+
+        fp = nonneg_values(combined["pressure"])
+        fl = nonneg_values(combined["leak"])
+        fr = positive_values(combined["resp_rate"])
+        ft_ = positive_values(combined["tidal_vol"])
+        fm = positive_values(combined["minute_vent"])
+
+        daily_rows.append({
+            "date": date,
+            "sessions": len(sessions),
+            "start": start,
+            "end": end,
+            "total_minutes": round(total_minutes, 1),
+            "ahi": ahi,
+            "ca_count": ca, "oa_count": oa, "h_count": h, "ua_count": ua,
+            "arousal_count": arousal,
+            "pressure_median": round(median(fp), 2) if fp else "",
+            "pressure_95": round(percentile(fp, 95), 2) if fp else "",
+            "pressure_995": round(percentile(fp, 99.5), 2) if fp else "",
+            "leak_median": round(median(fl), 2) if fl else "",
+            "leak_95": round(percentile(fl, 95), 2) if fl else "",
+            "resp_rate_median": round(median(fr), 2) if fr else "",
+            "tidal_vol_median": round(median(ft_), 2) if ft_ else "",
+            "minute_vent_median": round(median(fm), 2) if fm else "",
+        })
+
+    return daily_rows
+
+
+def etl_events(sessions_by_date):
+    """Extract apnea/hypopnea/arousal events from EVE files."""
+    rows = []
+    for date in sorted(sessions_by_date):
+        for session in sessions_by_date[date]:
+            session_start = session["session_start"]
+            eve_data = session.get("eve_data")
+            pld_data = session.get("pld_data")
+            if not eve_data or not pld_data:
+                continue
+
+            pld_dur = pld_data["num_records"] * pld_data["record_duration"]
+            if pld_dur <= 0:
+                continue
+
+            pld_start = pld_data["start"]
+            pld_end = pld_start + timedelta(seconds=pld_dur)
+
+            for ann in eve_data["annotations"]:
+                if ann["text"] == "Recording starts":
+                    continue
+                event_dt = eve_data["start"] + timedelta(seconds=ann["onset"])
+                if pld_start <= event_dt < pld_end:
+                    rows.append({
+                        "datetime": event_dt.isoformat(),
+                        "date": date,
+                        "session_start": session_start,
+                        "event": ann["text"],
+                        "duration_sec": round(ann["duration"], 1),
+                    })
+
+    rows.sort(key=lambda r: r["datetime"])
+    return rows
+
+
+def etl_timeseries(sessions_by_date, output_path):
+    """Write 2-second timeseries CSV. Returns row count."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    row_count = 0
+
+    with open(output_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=TIMESERIES_COLUMNS)
+        writer.writeheader()
+
+        for date in sorted(sessions_by_date):
+            for session in sessions_by_date[date]:
+                session_start = session["session_start"]
+                pld = session.get("pld_data")
+                if pld is None or pld["num_records"] <= 0:
+                    continue
+
+                pld_start = pld["start"]
+                col_data = {}
+                for label, sig in pld["signals"].items():
+                    col_name = PLD_SIGNAL_MAP.get(label)
+                    if col_name:
+                        col_data[col_name] = sig["data"]
+
+                if not col_data:
+                    continue
+
+                lengths = [len(v) for v in col_data.values()]
+                n_samples = min(lengths)
+
+                sprs = {label: sig["samples_per_record"]
+                        for label, sig in pld["signals"].items()
+                        if label in PLD_SIGNAL_MAP}
+                spr_values = set(sprs.values())
+                spr = next(iter(spr_values), None)
+                if spr and spr > 0 and pld["record_duration"] > 0:
+                    sample_interval = pld["record_duration"] / spr
+                else:
+                    sample_interval = 2
+
+                for i in range(n_samples):
+                    ts = pld_start + timedelta(seconds=i * sample_interval)
+                    row = {
+                        "datetime": ts.isoformat(),
+                        "date": date,
+                        "session_start": session_start,
+                    }
+                    for col_name in ["pressure", "leak", "resp_rate", "tidal_vol",
+                                     "minute_vent", "snore", "flow_limit"]:
+                        arr = col_data.get(col_name)
+                        if arr and i < len(arr):
+                            row[col_name] = round(arr[i], 3)
+                        else:
+                            row[col_name] = ""
+                    writer.writerow(row)
+                    row_count += 1
+
+    return row_count
