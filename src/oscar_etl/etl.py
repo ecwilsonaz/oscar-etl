@@ -217,3 +217,133 @@ def scan_profiles(oscar_dir, profile_name=None, machine_serial=None):
         sys.exit(1)
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Session discovery
+# ---------------------------------------------------------------------------
+
+def parse_file_timestamp(ts_str):
+    """Parse '20260101_015038' → datetime."""
+    return datetime.strptime(ts_str, "%Y%m%d_%H%M%S")
+
+
+def discover_sessions(datalog_dir, day_boundary=12):
+    """Scan DATALOG/ and group files into sessions keyed by date.
+
+    Each PLD file = one session (mask-on segment). CSL and EVE files
+    are shared across all PLD sessions within a power-on period.
+
+    Returns dict[str, list[dict]] keyed by date "YYYY-MM-DD".
+    """
+    all_files = []
+    for year_dir in sorted(datalog_dir.iterdir()):
+        if not year_dir.is_dir():
+            continue
+        if not re.fullmatch(r"\d{4}", year_dir.name):
+            continue
+        for edf_path in year_dir.glob("*.edf"):
+            m = FILE_PATTERN.match(edf_path.name)
+            if not m:
+                continue
+            file_type = m.group(2)
+            if file_type not in FILE_TYPES:
+                continue
+            ts_dt = parse_file_timestamp(m.group(1))
+            all_files.append((ts_dt, file_type, edf_path))
+
+    all_files.sort()
+
+    csl_indices = [i for i, (_, ft, _) in enumerate(all_files) if ft == "CSL"]
+    sessions_by_date = {}
+
+    for idx, ci in enumerate(csl_indices):
+        csl_dt, _, csl_path = all_files[ci]
+        next_ci = csl_indices[idx + 1] if idx + 1 < len(csl_indices) else len(all_files)
+
+        shared_files = {"CSL": csl_path}
+        pld_files = []
+
+        for j in range(ci + 1, next_ci):
+            ts_dt, ft, path = all_files[j]
+            if ft == "PLD":
+                pld_files.append((ts_dt, path))
+            elif ft in ("EVE", "BRP", "SAD"):
+                if ft not in shared_files:
+                    shared_files[ft] = path
+
+        if not pld_files:
+            continue
+
+        for pld_dt, pld_path in pld_files:
+            date = evening_date(pld_dt, day_boundary)
+            session = {
+                "date": date,
+                "session_start": pld_dt.isoformat(),
+                "files": {
+                    "PLD": pld_path,
+                    **{k: v for k, v in shared_files.items()},
+                },
+            }
+            if date not in sessions_by_date:
+                sessions_by_date[date] = []
+            sessions_by_date[date].append(session)
+
+    return sessions_by_date
+
+
+def parse_and_cache_edfs(sessions_by_date, day_boundary=12):
+    """Parse PLD and EVE files once, store results in session dicts.
+
+    Returns list of warning strings.
+    """
+    warnings = []
+    eve_cache = {}
+
+    for date in sorted(sessions_by_date):
+        for session in sessions_by_date[date]:
+            files = session["files"]
+
+            pld_path = files.get("PLD")
+            if pld_path:
+                try:
+                    pld_data = parse_edf(pld_path)
+                    warnings.extend(pld_data.get("warnings", []))
+                    session["pld_data"] = pld_data
+                    session["session_start"] = pld_data["start"].isoformat()
+                    session["date"] = evening_date(pld_data["start"], day_boundary)
+                    matched = [l for l in pld_data["signals"] if l in PLD_SIGNAL_MAP]
+                    if pld_data["signals"] and not matched:
+                        actual = list(pld_data["signals"].keys())
+                        warnings.append(
+                            f"No PLD signals matched expected labels in "
+                            f"{pld_path.name}. Found: {actual}"
+                        )
+                except Exception as e:
+                    warnings.append(f"Failed to parse PLD {pld_path.name}: {e}")
+                    session["pld_data"] = None
+
+            eve_path = files.get("EVE")
+            if eve_path:
+                if eve_path not in eve_cache:
+                    try:
+                        eve_data = parse_edf(eve_path)
+                        warnings.extend(eve_data.get("warnings", []))
+                        eve_cache[eve_path] = eve_data
+                    except Exception as e:
+                        warnings.append(f"Failed to parse EVE {eve_path.name}: {e}")
+                        eve_cache[eve_path] = None
+                session["eve_data"] = eve_cache[eve_path]
+
+    # Rebuild sessions_by_date since PLD header may have changed dates
+    rebuilt = {}
+    for date in list(sessions_by_date.keys()):
+        for session in sessions_by_date[date]:
+            new_date = session["date"]
+            if new_date not in rebuilt:
+                rebuilt[new_date] = []
+            rebuilt[new_date].append(session)
+    sessions_by_date.clear()
+    sessions_by_date.update(rebuilt)
+
+    return warnings
