@@ -144,6 +144,7 @@ def main(argv=None):
 
     output_dir = Path(args.output_dir)
     day_boundary = args.day_boundary
+    written_files = []
 
     with Progress(
         SpinnerColumn(),
@@ -166,19 +167,25 @@ def main(argv=None):
         # Sessions CSV
         task = progress.add_task("  Writing sessions.csv", total=1)
         session_rows, unattributed = etl_sessions(sessions_by_date, day_boundary=day_boundary)
-        write_csv(output_dir / "cpap_sessions.csv", SESSION_COLUMNS, session_rows)
+        sessions_path = output_dir / "cpap_sessions.csv"
+        write_csv(sessions_path, SESSION_COLUMNS, session_rows)
+        written_files.append(sessions_path)
         progress.update(task, completed=1)
 
         # Daily CSV
         task = progress.add_task("  Writing daily.csv", total=1)
         daily_rows = etl_daily(session_rows, sessions_by_date, unattributed)
-        write_csv(output_dir / "cpap_daily.csv", DAILY_COLUMNS, daily_rows)
+        daily_path = output_dir / "cpap_daily.csv"
+        write_csv(daily_path, DAILY_COLUMNS, daily_rows)
+        written_files.append(daily_path)
         progress.update(task, completed=1)
 
         # Events CSV
         task = progress.add_task("  Writing events.csv", total=1)
         event_rows = etl_events(sessions_by_date)
-        write_csv(output_dir / "cpap_events.csv", EVENTS_COLUMNS, event_rows)
+        events_path = output_dir / "cpap_events.csv"
+        write_csv(events_path, EVENTS_COLUMNS, event_rows)
+        written_files.append(events_path)
         progress.update(task, completed=1)
 
         # Release cached signal data before timeseries (re-parses from disk)
@@ -187,7 +194,9 @@ def main(argv=None):
         # Timeseries CSV
         if not args.skip_timeseries:
             task = progress.add_task("  Writing timeseries.csv", total=1)
-            ts_count, ts_warnings = etl_timeseries(sessions_by_date, output_dir / "cpap_timeseries.csv")
+            timeseries_path = output_dir / "cpap_timeseries.csv"
+            ts_count, ts_warnings = etl_timeseries(sessions_by_date, timeseries_path)
+            written_files.append(timeseries_path)
             warnings.extend(ts_warnings)
             progress.update(task, completed=1)
 
@@ -197,8 +206,7 @@ def main(argv=None):
     console.print(f"  {'─' * 35}")
     console.print(f"  {output_dir}/")
 
-    for name in ["cpap_sessions.csv", "cpap_daily.csv", "cpap_events.csv", "cpap_timeseries.csv"]:
-        path = output_dir / name
+    for path in written_files:
         if path.exists():
             size = path.stat().st_size
             if size > 1024 * 1024:
@@ -207,7 +215,7 @@ def main(argv=None):
                 size_str = f"{size / 1024:.0f} KB"
             else:
                 size_str = f"{size} B"
-            console.print(f"    {name:<25} {size_str}")
+            console.print(f"    {path.name:<25} {size_str}")
 
     if warnings:
         console.print()
