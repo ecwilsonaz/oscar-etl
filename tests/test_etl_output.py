@@ -73,7 +73,7 @@ class TestEtlSessions:
         _, datalog_dir = tmp_oscar_dir
         _setup_one_night(datalog_dir)
         sessions = discover_sessions(datalog_dir)
-        parse_and_cache_edfs(sessions)
+        sessions, _ = parse_and_cache_edfs(sessions)
         rows, unattributed = etl_sessions(sessions)
         assert len(rows) >= 1
         row = rows[0]
@@ -87,7 +87,7 @@ class TestEtlDaily:
         _, datalog_dir = tmp_oscar_dir
         _setup_one_night(datalog_dir)
         sessions = discover_sessions(datalog_dir)
-        parse_and_cache_edfs(sessions)
+        sessions, _ = parse_and_cache_edfs(sessions)
         session_rows, unattributed = etl_sessions(sessions)
         daily_rows = etl_daily(session_rows, sessions, unattributed)
         assert len(daily_rows) >= 1
@@ -100,7 +100,7 @@ class TestEtlEvents:
         _, datalog_dir = tmp_oscar_dir
         _setup_one_night(datalog_dir)
         sessions = discover_sessions(datalog_dir)
-        parse_and_cache_edfs(sessions)
+        sessions, _ = parse_and_cache_edfs(sessions)
         event_rows = etl_events(sessions)
         # Events may or may not fall within PLD time range depending on test data
         for row in event_rows:
@@ -113,9 +113,9 @@ class TestEtlTimeseries:
         _, datalog_dir = tmp_oscar_dir
         _setup_one_night(datalog_dir)
         sessions = discover_sessions(datalog_dir)
-        parse_and_cache_edfs(sessions)
+        sessions, _ = parse_and_cache_edfs(sessions)
         output_path = tmp_path / "timeseries.csv"
-        count = etl_timeseries(sessions, output_path)
+        count, _ = etl_timeseries(sessions, output_path)
         assert count > 0
         with open(output_path) as f:
             reader = csv.DictReader(f)

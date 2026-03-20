@@ -9,6 +9,19 @@ from pathlib import Path
 
 from oscar_etl.edf import parse_edf
 
+
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+class OscarDataNotFoundError(Exception):
+    """Raised when the OSCAR_Data directory cannot be found."""
+
+
+class NoProfilesFoundError(Exception):
+    """Raised when no ResMed profiles/machines are found."""
+
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -130,13 +143,12 @@ def find_oscar_dir(oscar_dir=None):
         Path to the OSCAR_Data directory (resolved, following symlinks).
 
     Raises:
-        SystemExit with helpful message if not found.
+        OscarDataNotFoundError if not found.
     """
     if oscar_dir:
         p = Path(oscar_dir)
         if not p.exists():
-            print(f"Error: --oscar-dir path does not exist: {p}", file=sys.stderr)
-            sys.exit(1)
+            raise OscarDataNotFoundError(f"--oscar-dir path does not exist: {p}")
         return p.resolve()
 
     for candidate in _default_oscar_paths():
@@ -157,22 +169,19 @@ def find_oscar_dir(oscar_dir=None):
             continue
 
     if sys.platform == "darwin":
-        print(
-            "Error: Could not find OSCAR_Data directory.\n\n"
+        raise OscarDataNotFoundError(
+            "Could not find OSCAR_Data directory.\n\n"
             "  If you haven't set up data access yet, see the macOS Setup\n"
             "  section in the README.\n\n"
             "  Or specify the path directly:\n"
-            "    oscar-etl --oscar-dir /path/to/OSCAR_Data",
-            file=sys.stderr,
+            "    oscar-etl --oscar-dir /path/to/OSCAR_Data"
         )
     else:
-        print(
-            "Error: Could not find OSCAR_Data directory.\n\n"
+        raise OscarDataNotFoundError(
+            "Could not find OSCAR_Data directory.\n\n"
             "  Specify the path directly:\n"
-            "    oscar-etl --oscar-dir /path/to/OSCAR_Data",
-            file=sys.stderr,
+            "    oscar-etl --oscar-dir /path/to/OSCAR_Data"
         )
-    sys.exit(1)
 
 
 def scan_profiles(oscar_dir, profile_name=None, machine_serial=None):
@@ -182,8 +191,7 @@ def scan_profiles(oscar_dir, profile_name=None, machine_serial=None):
     """
     profiles_dir = oscar_dir / "Profiles"
     if not profiles_dir.is_dir():
-        print(f"Error: No Profiles directory in {oscar_dir}", file=sys.stderr)
-        sys.exit(1)
+        raise NoProfilesFoundError(f"No Profiles directory in {oscar_dir}")
 
     results = []
     for profile_path in sorted(profiles_dir.iterdir()):
@@ -208,18 +216,15 @@ def scan_profiles(oscar_dir, profile_name=None, machine_serial=None):
 
     if not results:
         if profile_name or machine_serial:
-            print(
-                f"Error: No matching ResMed machine found "
-                f"(profile={profile_name!r}, machine={machine_serial!r})",
-                file=sys.stderr,
+            raise NoProfilesFoundError(
+                f"No matching ResMed machine found "
+                f"(profile={profile_name!r}, machine={machine_serial!r})"
             )
         else:
-            print(
-                "Error: No ResMed machines found in OSCAR_Data.\n"
-                "  oscar-etl currently supports ResMed machines only.",
-                file=sys.stderr,
+            raise NoProfilesFoundError(
+                "No ResMed machines found in OSCAR_Data.\n"
+                "  oscar-etl currently supports ResMed machines only."
             )
-        sys.exit(1)
 
     return results
 
@@ -321,7 +326,9 @@ def discover_sessions(datalog_dir, day_boundary=12):
 def parse_and_cache_edfs(sessions_by_date, day_boundary=12):
     """Parse PLD and EVE files once, store results in session dicts.
 
-    Returns list of warning strings.
+    Returns (rebuilt_sessions_by_date, warnings). The returned dict may have
+    different date keys than the input because PLD headers can shift session
+    dates.
     """
     warnings = []
     eve_cache = {}
@@ -381,18 +388,16 @@ def parse_and_cache_edfs(sessions_by_date, day_boundary=12):
                     )
                 session["eve_data"] = merged_eve
 
-    # Rebuild sessions_by_date since PLD header may have changed dates
+    # Rebuild by date since PLD header parsing may have shifted session dates
     rebuilt = {}
-    for date in list(sessions_by_date.keys()):
+    for date in sessions_by_date:
         for session in sessions_by_date[date]:
             new_date = session["date"]
             if new_date not in rebuilt:
                 rebuilt[new_date] = []
             rebuilt[new_date].append(session)
-    sessions_by_date.clear()
-    sessions_by_date.update(rebuilt)
 
-    return warnings
+    return rebuilt, warnings
 
 
 # ---------------------------------------------------------------------------
@@ -417,7 +422,7 @@ def write_csv(path, fieldnames, rows):
     path.parent.mkdir(parents=True, exist_ok=True)
     clean_rows = [{k: v for k, v in row.items() if not k.startswith("_")} for row in rows]
     with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(clean_rows)
 
@@ -513,7 +518,11 @@ def etl_sessions(sessions_by_date, day_boundary=12):
             }
             rows.append(row)
 
-    # Second pass: find unattributed events using the fully-built global_pld_ranges
+    # Second pass: find events whose timestamps fall just outside PLD boundaries
+    # (timestamp rounding artifacts, not real mask-off events — the machine can't
+    # detect apneas without the mask). These are added to daily totals since the
+    # events did occur, but excluded from cpap_events.csv since they can't be
+    # attributed to a specific session.
     seen_eve_ids = set()
     for date in sorted(sessions_by_date):
         for session in sessions_by_date[date]:
@@ -652,12 +661,14 @@ def etl_events(sessions_by_date):
 
 
 def etl_timeseries(sessions_by_date, output_path):
-    """Write 2-second timeseries CSV. Returns row count.
+    """Write 2-second timeseries CSV.
 
     Re-parses PLD files from disk to avoid holding all signal data in memory.
+    Returns (row_count, warnings).
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     row_count = 0
+    ts_warnings = []
 
     with open(output_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=TIMESERIES_COLUMNS)
@@ -696,19 +707,17 @@ def etl_timeseries(sessions_by_date, output_path):
                         if label in PLD_SIGNAL_MAP}
                 spr_values = set(sprs.values())
                 if len(spr_values) > 1:
-                    print(
-                        f"  WARN: Mixed sample rates in session {session_start}: {sprs}",
-                        file=sys.stderr,
+                    ts_warnings.append(
+                        f"Mixed sample rates in session {session_start}: {sprs}"
                     )
                 spr = max(spr_values) if spr_values else None
                 if spr and spr > 0 and pld["record_duration"] > 0:
                     sample_interval = pld["record_duration"] / spr
                 else:
                     sample_interval = 2  # fallback for unknown sample rate
-                    print(
-                        f"  WARN: Could not determine sample interval for session "
-                        f"{session_start}, defaulting to 2s",
-                        file=sys.stderr,
+                    ts_warnings.append(
+                        f"Could not determine sample interval for session "
+                        f"{session_start}, defaulting to 2s"
                     )
 
                 for i in range(n_samples):
@@ -728,4 +737,4 @@ def etl_timeseries(sessions_by_date, output_path):
                     writer.writerow(row)
                     row_count += 1
 
-    return row_count
+    return row_count, ts_warnings

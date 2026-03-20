@@ -13,6 +13,8 @@ from oscar_etl.etl import (
     DAILY_COLUMNS,
     EVENTS_COLUMNS,
     SESSION_COLUMNS,
+    OscarDataNotFoundError,
+    NoProfilesFoundError,
     find_oscar_dir,
     scan_profiles,
     discover_sessions,
@@ -107,12 +109,16 @@ def main(argv=None):
     console.print()
 
     # --- Discovery ---
-    oscar_dir = find_oscar_dir(oscar_dir=args.oscar_dir)
-    profiles = scan_profiles(
-        oscar_dir,
-        profile_name=args.profile,
-        machine_serial=args.machine,
-    )
+    try:
+        oscar_dir = find_oscar_dir(oscar_dir=args.oscar_dir)
+        profiles = scan_profiles(
+            oscar_dir,
+            profile_name=args.profile,
+            machine_serial=args.machine,
+        )
+    except (OscarDataNotFoundError, NoProfilesFoundError) as e:
+        console.print(f"  [red]Error:[/red] {e}", highlight=False)
+        sys.exit(1)
 
     if len(profiles) > 1:
         profile = pick_profile(profiles)
@@ -154,7 +160,7 @@ def main(argv=None):
 
         # Parse EDF files
         task = progress.add_task("  Parsing EDF files", total=total_sessions)
-        warnings = parse_and_cache_edfs(sessions_by_date, day_boundary=day_boundary)
+        sessions_by_date, warnings = parse_and_cache_edfs(sessions_by_date, day_boundary=day_boundary)
         progress.update(task, completed=total_sessions)
 
         # Sessions CSV
@@ -181,7 +187,8 @@ def main(argv=None):
         # Timeseries CSV
         if not args.skip_timeseries:
             task = progress.add_task("  Writing timeseries.csv", total=1)
-            ts_count = etl_timeseries(sessions_by_date, output_dir / "cpap_timeseries.csv")
+            ts_count, ts_warnings = etl_timeseries(sessions_by_date, output_dir / "cpap_timeseries.csv")
+            warnings.extend(ts_warnings)
             progress.update(task, completed=1)
 
     # --- Summary ---

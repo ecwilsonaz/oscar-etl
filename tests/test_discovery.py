@@ -1,4 +1,11 @@
-from oscar_etl.etl import find_oscar_dir, scan_profiles
+import pytest
+
+from oscar_etl.etl import (
+    OscarDataNotFoundError,
+    NoProfilesFoundError,
+    find_oscar_dir,
+    scan_profiles,
+)
 
 
 class TestFindOscarDir:
@@ -9,8 +16,7 @@ class TestFindOscarDir:
         assert result == oscar_dir
 
     def test_explicit_override_missing_raises(self, tmp_path):
-        import pytest
-        with pytest.raises(SystemExit):
+        with pytest.raises(OscarDataNotFoundError):
             find_oscar_dir(oscar_dir=str(tmp_path / "nonexistent"))
 
     def test_follows_symlink(self, tmp_path):
@@ -32,11 +38,10 @@ class TestScanProfiles:
         assert profiles[0]["datalog"].is_dir()
 
     def test_no_profiles_raises(self, tmp_path):
-        import pytest
         oscar_dir = tmp_path / "OSCAR_Data"
         oscar_dir.mkdir()
         (oscar_dir / "Profiles").mkdir()
-        with pytest.raises(SystemExit):
+        with pytest.raises(NoProfilesFoundError):
             scan_profiles(oscar_dir)
 
     def test_multiple_profiles(self, tmp_path):
