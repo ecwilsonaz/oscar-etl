@@ -262,6 +262,21 @@ def discover_sessions(datalog_dir, day_boundary=12):
     csl_indices = [i for i, (_, ft, _) in enumerate(all_files) if ft == "CSL"]
     sessions_by_date = {}
 
+    # Handle orphaned PLD files before the first CSL
+    first_csl = csl_indices[0] if csl_indices else len(all_files)
+    for i in range(first_csl):
+        ts_dt, ft, path = all_files[i]
+        if ft == "PLD":
+            date = evening_date(ts_dt, day_boundary)
+            session = {
+                "date": date,
+                "session_start": ts_dt.isoformat(),
+                "files": {"PLD": path},
+            }
+            if date not in sessions_by_date:
+                sessions_by_date[date] = []
+            sessions_by_date[date].append(session)
+
     for idx, ci in enumerate(csl_indices):
         csl_dt, _, csl_path = all_files[ci]
         next_ci = csl_indices[idx + 1] if idx + 1 < len(csl_indices) else len(all_files)
@@ -372,7 +387,7 @@ def write_csv(path, fieldnames, rows):
 # Session processing
 # ---------------------------------------------------------------------------
 
-def etl_sessions(sessions_by_date):
+def etl_sessions(sessions_by_date, day_boundary=12):
     """Parse each session's EDF files and produce session rows.
 
     Returns (rows, unattributed_events).
@@ -476,9 +491,10 @@ def etl_sessions(sessions_by_date):
                 event_dt = eve_data["start"] + timedelta(seconds=ann["onset"])
                 attributed = any(s <= event_dt < e for s, e in all_ranges)
                 if not attributed:
-                    if date not in unattributed_events:
-                        unattributed_events[date] = {c: 0 for c in EVENT_MAP.values()}
-                    unattributed_events[date][col] += 1
+                    event_date = evening_date(event_dt, day_boundary)
+                    if event_date not in unattributed_events:
+                        unattributed_events[event_date] = {c: 0 for c in EVENT_MAP.values()}
+                    unattributed_events[event_date][col] += 1
 
     rows.sort(key=lambda r: (r["date"], r["session_start"]))
     return rows, unattributed_events

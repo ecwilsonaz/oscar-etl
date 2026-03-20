@@ -45,6 +45,8 @@ def pick_profile(profiles):
         except EOFError:
             console.print("  Non-interactive mode, selecting first profile.")
             return profiles[0]
+        except KeyboardInterrupt:
+            sys.exit(130)
         except ValueError:
             pass
         console.print("  Invalid choice, try again.")
@@ -156,7 +158,7 @@ def main(argv=None):
 
         # Sessions CSV
         task = progress.add_task("  Writing sessions.csv", total=1)
-        session_rows, unattributed = etl_sessions(sessions_by_date)
+        session_rows, unattributed = etl_sessions(sessions_by_date, day_boundary=day_boundary)
         write_csv(output_dir / "cpap_sessions.csv", SESSION_COLUMNS, session_rows)
         progress.update(task, completed=1)
 

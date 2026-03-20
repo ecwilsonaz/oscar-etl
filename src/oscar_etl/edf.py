@@ -141,17 +141,23 @@ def parse_edf(path):
         i for i, l in enumerate(labels) if l == "EDF Annotations"
     }
     annotation_regex = re.compile(
-        r"[+-](\d+(?:\.\d+)?)(?:\x15(\d+(?:\.\d+)?))?\x14([^\x14]*)\x14"
+        r"([+-]\d+(?:\.\d+)?)(?:\x15(\d+(?:\.\d+)?))?\x14([^\x14]*)\x14"
     )
 
     records_parsed = 0
     for rec in range(actual_records):
         rec_offset = data_offset
+        # Buffer this record's data — only commit after full record is validated
+        rec_signals = {}
+        rec_annotations = []
+        truncated = False
+
         for i in range(ns):
             n_samples = samples_per_record[i]
             byte_count = n_samples * 2
 
             if rec_offset + byte_count > len(raw):
+                truncated = True
                 break
 
             sig_bytes = raw[rec_offset : rec_offset + byte_count]
@@ -161,7 +167,7 @@ def parse_edf(path):
                 for m in annotation_regex.finditer(text):
                     dur_str = m.group(2)
                     duration = float(dur_str) if dur_str else 0.0
-                    annotations.append(
+                    rec_annotations.append(
                         {
                             "onset": float(m.group(1)),
                             "duration": duration,
@@ -171,28 +177,34 @@ def parse_edf(path):
             elif labels[i] not in skip_labels:
                 label = labels[i]
                 scale_denom = dig_max[i] - dig_min[i]
+                values = []
                 if scale_denom == 0:
                     for j in range(n_samples):
                         val = struct.unpack_from("<h", sig_bytes, j * 2)[0]
-                        signals[label]["data"].append(float(val))
+                        values.append(float(val))
                 else:
                     scale = (phys_max[i] - phys_min[i]) / scale_denom
                     for j in range(n_samples):
                         digital = struct.unpack_from("<h", sig_bytes, j * 2)[0]
                         physical = phys_min[i] + (digital - dig_min[i]) * scale
-                        signals[label]["data"].append(physical)
+                        values.append(physical)
+                rec_signals[label] = values
 
             rec_offset += byte_count
-        else:
-            data_offset = rec_offset
-            records_parsed += 1
-            continue
-        # Truncated record — stop and warn
-        if records_parsed < actual_records:
-            warnings.append(
-                f"Truncated file {path.name}: parsed {records_parsed}/{actual_records} records"
-            )
-        break
+
+        if truncated:
+            if records_parsed < actual_records:
+                warnings.append(
+                    f"Truncated file {path.name}: parsed {records_parsed}/{actual_records} records"
+                )
+            break
+
+        # Full record validated — commit buffered data
+        for label, values in rec_signals.items():
+            signals[label]["data"].extend(values)
+        annotations.extend(rec_annotations)
+        data_offset = rec_offset
+        records_parsed += 1
 
     return {
         "start": start,
