@@ -174,8 +174,8 @@ def find_oscar_dir(oscar_dir=None):
     if sys.platform == "darwin":
         raise OscarDataNotFoundError(
             "Could not find OSCAR_Data directory.\n\n"
-            "  If you haven't set up data access yet, see the macOS Setup\n"
-            "  section in the README.\n\n"
+            "  If you haven't set up data access yet, see:\n"
+            "  https://github.com/ecwilsonaz/oscar-etl#macos-setup\n\n"
             "  Or specify the path directly:\n"
             "    oscar-etl --oscar-dir /path/to/OSCAR_Data"
         )
