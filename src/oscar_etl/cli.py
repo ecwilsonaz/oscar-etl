@@ -21,6 +21,7 @@ from oscar_etl.etl import (
     etl_daily,
     etl_events,
     etl_timeseries,
+    release_signal_data,
     write_csv,
 )
 
@@ -173,6 +174,9 @@ def main(argv=None):
         event_rows = etl_events(sessions_by_date)
         write_csv(output_dir / "cpap_events.csv", EVENTS_COLUMNS, event_rows)
         progress.update(task, completed=1)
+
+        # Release cached signal data before timeseries (re-parses from disk)
+        release_signal_data(sessions_by_date)
 
         # Timeseries CSV
         if not args.skip_timeseries:

@@ -282,15 +282,21 @@ def discover_sessions(datalog_dir, day_boundary=12):
         next_ci = csl_indices[idx + 1] if idx + 1 < len(csl_indices) else len(all_files)
 
         shared_files = {"CSL": csl_path}
+        eve_files = []
         pld_files = []
 
         for j in range(ci + 1, next_ci):
             ts_dt, ft, path = all_files[j]
             if ft == "PLD":
                 pld_files.append((ts_dt, path))
-            elif ft in ("EVE", "BRP", "SAD"):
+            elif ft == "EVE":
+                eve_files.append(path)
+            elif ft in ("BRP", "SAD"):
                 if ft not in shared_files:
                     shared_files[ft] = path
+
+        if eve_files:
+            shared_files["EVE"] = eve_files  # list of all EVE paths
 
         if not pld_files:
             continue
@@ -343,17 +349,37 @@ def parse_and_cache_edfs(sessions_by_date, day_boundary=12):
                     warnings.append(f"Failed to parse PLD {pld_path.name}: {e}")
                     session["pld_data"] = None
 
-            eve_path = files.get("EVE")
-            if eve_path:
-                if eve_path not in eve_cache:
-                    try:
-                        eve_data = parse_edf(eve_path)
-                        warnings.extend(eve_data.get("warnings", []))
-                        eve_cache[eve_path] = eve_data
-                    except Exception as e:
-                        warnings.append(f"Failed to parse EVE {eve_path.name}: {e}")
-                        eve_cache[eve_path] = None
-                session["eve_data"] = eve_cache[eve_path]
+            eve_paths = files.get("EVE")
+            if eve_paths:
+                if not isinstance(eve_paths, list):
+                    eve_paths = [eve_paths]
+                # Parse all EVE files and merge annotations
+                merged_eve = None
+                for ep in eve_paths:
+                    if ep not in eve_cache:
+                        try:
+                            eve_data = parse_edf(ep)
+                            warnings.extend(eve_data.get("warnings", []))
+                            eve_cache[ep] = eve_data
+                        except Exception as e:
+                            warnings.append(f"Failed to parse EVE {ep.name}: {e}")
+                            eve_cache[ep] = None
+                    cached = eve_cache[ep]
+                    if cached is None:
+                        continue
+                    if merged_eve is None:
+                        merged_eve = {
+                            "start": cached["start"],
+                            "annotations": list(cached["annotations"]),
+                        }
+                    else:
+                        # Merge annotations from additional EVE files
+                        merged_eve["annotations"].extend(cached["annotations"])
+                if len(eve_paths) > 1:
+                    warnings.append(
+                        f"Merged {len(eve_paths)} EVE files in power-on period"
+                    )
+                session["eve_data"] = merged_eve
 
     # Rebuild sessions_by_date since PLD header may have changed dates
     rebuilt = {}
@@ -367,6 +393,19 @@ def parse_and_cache_edfs(sessions_by_date, day_boundary=12):
     sessions_by_date.update(rebuilt)
 
     return warnings
+
+
+# ---------------------------------------------------------------------------
+# Memory management
+# ---------------------------------------------------------------------------
+
+def release_signal_data(sessions_by_date):
+    """Release cached PLD signal data to free memory before timeseries pass."""
+    for date in sessions_by_date:
+        for session in sessions_by_date[date]:
+            pld_data = session.get("pld_data")
+            if pld_data:
+                pld_data["signals"] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -415,9 +454,10 @@ def etl_sessions(sessions_by_date, day_boundary=12):
 
             counts = {col: 0 for col in EVENT_MAP.values()}
             pld_end_ts = pld_start + timedelta(seconds=pld_dur)
-            eve_path = session["files"].get("EVE")
-            if eve_path:
-                global_pld_ranges.setdefault(eve_path, []).append((pld_start, pld_end_ts))
+            eve_data = session.get("eve_data")
+            eve_key = id(eve_data) if eve_data else None
+            if eve_key:
+                global_pld_ranges.setdefault(eve_key, []).append((pld_start, pld_end_ts))
             eve_data = session.get("eve_data")
             if eve_data:
                 for ann in eve_data["annotations"]:
@@ -474,16 +514,18 @@ def etl_sessions(sessions_by_date, day_boundary=12):
             rows.append(row)
 
     # Second pass: find unattributed events using the fully-built global_pld_ranges
-    seen_eve_paths = set()
+    seen_eve_ids = set()
     for date in sorted(sessions_by_date):
         for session in sessions_by_date[date]:
             eve_data = session.get("eve_data")
-            eve_path = session["files"].get("EVE")
-            if not eve_data or not eve_path or eve_path in seen_eve_paths:
+            if not eve_data:
                 continue
-            seen_eve_paths.add(eve_path)
+            eve_id = id(eve_data)
+            if eve_id in seen_eve_ids:
+                continue
+            seen_eve_ids.add(eve_id)
 
-            all_ranges = global_pld_ranges.get(eve_path, [])
+            all_ranges = global_pld_ranges.get(eve_id, [])
             for ann in eve_data["annotations"]:
                 col = EVENT_MAP.get(ann["text"])
                 if not col:
@@ -610,7 +652,10 @@ def etl_events(sessions_by_date):
 
 
 def etl_timeseries(sessions_by_date, output_path):
-    """Write 2-second timeseries CSV. Returns row count."""
+    """Write 2-second timeseries CSV. Returns row count.
+
+    Re-parses PLD files from disk to avoid holding all signal data in memory.
+    """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     row_count = 0
 
@@ -621,8 +666,16 @@ def etl_timeseries(sessions_by_date, output_path):
         for date in sorted(sessions_by_date):
             for session in sessions_by_date[date]:
                 session_start = session["session_start"]
-                pld = session.get("pld_data")
-                if pld is None or pld["num_records"] <= 0:
+                pld_path = session["files"].get("PLD")
+                if not pld_path:
+                    continue
+
+                # Re-parse PLD from disk (small files, ~200KB each)
+                try:
+                    pld = parse_edf(pld_path)
+                except Exception:
+                    continue
+                if pld["num_records"] <= 0:
                     continue
 
                 pld_start = pld["start"]
@@ -642,7 +695,12 @@ def etl_timeseries(sessions_by_date, output_path):
                         for label, sig in pld["signals"].items()
                         if label in PLD_SIGNAL_MAP}
                 spr_values = set(sprs.values())
-                spr = next(iter(spr_values), None)
+                if len(spr_values) > 1:
+                    print(
+                        f"  WARN: Mixed sample rates in session {session_start}: {sprs}",
+                        file=sys.stderr,
+                    )
+                spr = max(spr_values) if spr_values else None
                 if spr and spr > 0 and pld["record_duration"] > 0:
                     sample_interval = pld["record_duration"] / spr
                 else:
