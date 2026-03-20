@@ -134,14 +134,14 @@ One row per night, aggregated from all sessions for that date.
 
 ### cpap_events.csv
 
-One row per apnea, hypopnea, or arousal event.
+One row per event annotation recorded by the machine. This includes therapy events counted in AHI (`Obstructive Apnea`, `Central Apnea`, `Hypopnea`, `Apnea`, `Arousal`) as well as other annotations the machine records (`Large Leak`, `CSR`, etc.). The session and daily CSVs only count the five therapy event types in their AHI and event count columns.
 
 | Column | Description |
 |---|---|
 | `datetime` | ISO 8601 timestamp of the event |
 | `date` | Night date the event belongs to |
 | `session_start` | The session this event occurred in |
-| `event` | Event type: `Obstructive Apnea`, `Central Apnea`, `Hypopnea`, `Apnea`, or `Arousal` |
+| `event` | Event type (e.g., `Obstructive Apnea`, `Large Leak`, `Hypopnea`) |
 | `duration_sec` | Duration of the event in seconds |
 
 ### cpap_timeseries.csv
