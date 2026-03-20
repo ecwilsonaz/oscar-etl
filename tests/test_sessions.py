@@ -1,6 +1,3 @@
-from datetime import datetime
-from pathlib import Path
-
 from tests.conftest import build_edf
 from oscar_etl.etl import discover_sessions, parse_and_cache_edfs
 
@@ -100,7 +97,7 @@ class TestParseAndCacheEdfs:
             signals={"Press.2s": [10.0, 11.0, 12.0]},
         )
         sessions = discover_sessions(datalog_dir, day_boundary=12)
-        warnings = sessions, _ = parse_and_cache_edfs(sessions)
+        sessions, _ = parse_and_cache_edfs(sessions)
         # Find the session (date may shift based on PLD header time)
         all_sessions = [s for date_sessions in sessions.values() for s in date_sessions]
         assert len(all_sessions) == 1

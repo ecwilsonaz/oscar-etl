@@ -345,7 +345,7 @@ def parse_and_cache_edfs(sessions_by_date, day_boundary=12):
                     session["pld_data"] = pld_data
                     session["session_start"] = pld_data["start"].isoformat()
                     session["date"] = evening_date(pld_data["start"], day_boundary)
-                    matched = [l for l in pld_data["signals"] if l in PLD_SIGNAL_MAP]
+                    matched = [lbl for lbl in pld_data["signals"] if lbl in PLD_SIGNAL_MAP]
                     if pld_data["signals"] and not matched:
                         actual = list(pld_data["signals"].keys())
                         warnings.append(

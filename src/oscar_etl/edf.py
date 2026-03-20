@@ -138,7 +138,7 @@ def parse_edf(path):
             }
 
     annotation_indices = {
-        i for i, l in enumerate(labels) if l == "EDF Annotations"
+        i for i, lbl in enumerate(labels) if lbl == "EDF Annotations"
     }
     annotation_regex = re.compile(
         r"([+-]\d+(?:\.\d+)?)(?:\x15(\d+(?:\.\d+)?))?\x14([^\x14]*)\x14"
