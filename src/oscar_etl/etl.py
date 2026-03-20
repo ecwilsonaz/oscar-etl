@@ -342,7 +342,7 @@ def parse_and_cache_edfs(sessions_by_date, day_boundary=12):
     """
     warnings = []
     eve_cache = {}           # path -> parsed EDF data
-    eve_merge_cache = {}     # (path_tuple,) -> merged eve_data object
+    eve_merge_cache = {}     # path_tuple -> merged eve_data object
 
     for date in sorted(sessions_by_date):
         for session in sessions_by_date[date]:
@@ -703,7 +703,8 @@ def etl_timeseries(sessions_by_date, output_path):
                 # Re-parse PLD from disk (small files, ~200KB each)
                 try:
                     pld = parse_edf(pld_path)
-                except Exception:
+                except Exception as e:
+                    ts_warnings.append(f"Failed to re-parse PLD {pld_path.name}: {e}")
                     continue
                 if pld["num_records"] <= 0:
                     continue

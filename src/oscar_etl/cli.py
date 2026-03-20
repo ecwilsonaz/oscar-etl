@@ -188,11 +188,10 @@ def main(argv=None):
         written_files.append(events_path)
         progress.update(task, completed=1)
 
-        # Release cached signal data before timeseries (re-parses from disk)
-        release_signal_data(sessions_by_date)
-
         # Timeseries CSV
         if not args.skip_timeseries:
+            # Release cached signal data — timeseries re-parses from disk
+            release_signal_data(sessions_by_date)
             task = progress.add_task("  Writing timeseries.csv", total=1)
             timeseries_path = output_dir / "cpap_timeseries.csv"
             ts_count, ts_warnings = etl_timeseries(sessions_by_date, timeseries_path)
