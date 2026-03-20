@@ -398,7 +398,14 @@ def parse_and_cache_edfs(sessions_by_date, day_boundary=12):
                                 "annotations": list(cached["annotations"]),
                             }
                         else:
-                            merged_eve["annotations"].extend(cached["annotations"])
+                            # Adjust onsets relative to the first EVE's start time
+                            offset = (cached["start"] - merged_eve["start"]).total_seconds()
+                            for ann in cached["annotations"]:
+                                merged_eve["annotations"].append({
+                                    "onset": ann["onset"] + offset,
+                                    "duration": ann["duration"],
+                                    "text": ann["text"],
+                                })
                     if len(eve_paths) > 1 and merged_eve:
                         warnings.append(
                             f"Merged {len(eve_paths)} EVE files in power-on period"
