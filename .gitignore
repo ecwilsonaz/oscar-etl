@@ -7,3 +7,4 @@ build/
 oscar-etl-output/
 *.csv
 .pytest_cache/
+*.DS_Store
