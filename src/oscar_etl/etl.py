@@ -331,7 +331,8 @@ def parse_and_cache_edfs(sessions_by_date, day_boundary=12):
     dates.
     """
     warnings = []
-    eve_cache = {}
+    eve_cache = {}           # path -> parsed EDF data
+    eve_merge_cache = {}     # (path_tuple,) -> merged eve_data object
 
     for date in sorted(sessions_by_date):
         for session in sessions_by_date[date]:
@@ -360,33 +361,37 @@ def parse_and_cache_edfs(sessions_by_date, day_boundary=12):
             if eve_paths:
                 if not isinstance(eve_paths, list):
                     eve_paths = [eve_paths]
-                # Parse all EVE files and merge annotations
-                merged_eve = None
-                for ep in eve_paths:
-                    if ep not in eve_cache:
-                        try:
-                            eve_data = parse_edf(ep)
-                            warnings.extend(eve_data.get("warnings", []))
-                            eve_cache[ep] = eve_data
-                        except Exception as e:
-                            warnings.append(f"Failed to parse EVE {ep.name}: {e}")
-                            eve_cache[ep] = None
-                    cached = eve_cache[ep]
-                    if cached is None:
-                        continue
-                    if merged_eve is None:
-                        merged_eve = {
-                            "start": cached["start"],
-                            "annotations": list(cached["annotations"]),
-                        }
-                    else:
-                        # Merge annotations from additional EVE files
-                        merged_eve["annotations"].extend(cached["annotations"])
-                if len(eve_paths) > 1:
-                    warnings.append(
-                        f"Merged {len(eve_paths)} EVE files in power-on period"
-                    )
-                session["eve_data"] = merged_eve
+                # Cache merged EVE by path tuple so sessions sharing
+                # the same EVE files get the same object (needed for
+                # id()-based grouping in etl_sessions)
+                eve_key = tuple(sorted(str(p) for p in eve_paths))
+                if eve_key not in eve_merge_cache:
+                    merged_eve = None
+                    for ep in eve_paths:
+                        if ep not in eve_cache:
+                            try:
+                                eve_data = parse_edf(ep)
+                                warnings.extend(eve_data.get("warnings", []))
+                                eve_cache[ep] = eve_data
+                            except Exception as e:
+                                warnings.append(f"Failed to parse EVE {ep.name}: {e}")
+                                eve_cache[ep] = None
+                        cached = eve_cache[ep]
+                        if cached is None:
+                            continue
+                        if merged_eve is None:
+                            merged_eve = {
+                                "start": cached["start"],
+                                "annotations": list(cached["annotations"]),
+                            }
+                        else:
+                            merged_eve["annotations"].extend(cached["annotations"])
+                    if len(eve_paths) > 1 and merged_eve:
+                        warnings.append(
+                            f"Merged {len(eve_paths)} EVE files in power-on period"
+                        )
+                    eve_merge_cache[eve_key] = merged_eve
+                session["eve_data"] = eve_merge_cache[eve_key]
 
     # Rebuild by date since PLD header parsing may have shifted session dates
     rebuilt = {}
