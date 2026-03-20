@@ -141,7 +141,7 @@ One row per apnea, hypopnea, or arousal event.
 | `datetime` | ISO 8601 timestamp of the event |
 | `date` | Night date the event belongs to |
 | `session_start` | The session this event occurred in |
-| `event` | Event type (e.g., `OA`, `CA`, `H`, `UA`, `arousal`) |
+| `event` | Event type: `Obstructive Apnea`, `Central Apnea`, `Hypopnea`, `Apnea`, or `Arousal` |
 | `duration_sec` | Duration of the event in seconds |
 
 ### cpap_timeseries.csv
