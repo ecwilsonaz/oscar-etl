@@ -99,3 +99,121 @@ def evening_date(dt, day_boundary=12):
     if dt.hour < day_boundary:
         return (dt - timedelta(days=1)).strftime("%Y-%m-%d")
     return dt.strftime("%Y-%m-%d")
+
+
+# ---------------------------------------------------------------------------
+# OSCAR data discovery
+# ---------------------------------------------------------------------------
+
+def _default_oscar_paths():
+    """Return platform-specific default OSCAR_Data paths to try."""
+    home = Path.home()
+    if sys.platform == "darwin":
+        return [home / "Documents" / "OSCAR_Data"]
+    elif sys.platform == "win32":
+        return [home / "Documents" / "OSCAR_Data"]
+    else:
+        xdg = Path(os.environ.get("XDG_DATA_HOME", home / ".local" / "share"))
+        return [
+            xdg / "OSCAR_Data",
+            home / "Documents" / "OSCAR_Data",
+        ]
+
+
+def find_oscar_dir(oscar_dir=None):
+    """Locate the OSCAR_Data directory.
+
+    Args:
+        oscar_dir: Explicit path override (from --oscar-dir flag).
+
+    Returns:
+        Path to the OSCAR_Data directory (resolved, following symlinks).
+
+    Raises:
+        SystemExit with helpful message if not found.
+    """
+    if oscar_dir:
+        p = Path(oscar_dir)
+        if not p.exists():
+            print(f"Error: --oscar-dir path does not exist: {p}", file=sys.stderr)
+            sys.exit(1)
+        return p.resolve()
+
+    for candidate in _default_oscar_paths():
+        try:
+            resolved = candidate.resolve()
+            if resolved.is_dir():
+                return resolved
+        except PermissionError:
+            if candidate.is_symlink():
+                target = candidate.resolve()
+                if target.is_dir():
+                    return target
+            continue
+
+    if sys.platform == "darwin":
+        print(
+            "Error: Could not find OSCAR_Data directory.\n\n"
+            "  If you haven't set up data access yet, see the README:\n"
+            "  https://github.com/yourname/oscar-etl#macos-setup\n\n"
+            "  Or specify the path directly:\n"
+            "    oscar-etl --oscar-dir /path/to/OSCAR_Data",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            "Error: Could not find OSCAR_Data directory.\n\n"
+            "  Specify the path directly:\n"
+            "    oscar-etl --oscar-dir /path/to/OSCAR_Data",
+            file=sys.stderr,
+        )
+    sys.exit(1)
+
+
+def scan_profiles(oscar_dir, profile_name=None, machine_serial=None):
+    """Scan OSCAR_Data for profiles and ResMed machines.
+
+    Returns list of dicts: [{"name": str, "serial": str, "datalog": Path}]
+    """
+    profiles_dir = oscar_dir / "Profiles"
+    if not profiles_dir.is_dir():
+        print(f"Error: No Profiles directory in {oscar_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    results = []
+    for profile_path in sorted(profiles_dir.iterdir()):
+        if not profile_path.is_dir():
+            continue
+        name = profile_path.name
+        if profile_name and name != profile_name:
+            continue
+        for machine_path in sorted(profile_path.iterdir()):
+            if not machine_path.is_dir() or not machine_path.name.startswith("ResMed_"):
+                continue
+            serial = machine_path.name
+            if machine_serial and machine_serial not in serial:
+                continue
+            datalog = machine_path / "Backup" / "DATALOG"
+            if datalog.is_dir():
+                results.append({
+                    "name": name,
+                    "serial": serial,
+                    "datalog": datalog,
+                })
+
+    if not results:
+        if profile_name or machine_serial:
+            print(
+                f"Error: No matching ResMed machine found "
+                f"(profile={profile_name!r}, machine={machine_serial!r})",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "Error: No ResMed machines found in OSCAR_Data.\n"
+                "  oscar-etl currently supports ResMed machines only.",
+                file=sys.stderr,
+            )
+        sys.exit(1)
+
+    return results
