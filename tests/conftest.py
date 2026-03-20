@@ -52,7 +52,7 @@ def build_edf(
             samples_per_record.append(1)
 
     if num_records is None:
-        num_records = max_len
+        num_records = max(max_len, 1 if has_annotations else 0)
 
     # --- Fixed header (256 bytes) ---
     def pad(s, width):
