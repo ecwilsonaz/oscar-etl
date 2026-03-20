@@ -28,8 +28,8 @@ Expected output:
   Data source
   -----------------------------------
   Location:  /Users/you/OSCAR_Data
-  Profile:   Default
-  Machine:   39123456789
+  Profile:   Your Name
+  Machine:   ResMed_23192261096
   EDF files: 2,847
 
   Extracting
@@ -130,7 +130,7 @@ One row per night, aggregated from all sessions for that date.
 | `end` | Latest session end |
 | `total_minutes` | Total therapy time across all sessions |
 | `ahi` | AHI across all sessions |
-| Same stat columns as sessions | Aggregated across all sessions for the night |
+| `pressure_median`, `pressure_95`, etc. | Same stat columns as sessions, recomputed across all sessions for the night |
 
 ### cpap_events.csv
 

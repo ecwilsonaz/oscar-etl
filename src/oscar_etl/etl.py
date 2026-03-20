@@ -122,7 +122,10 @@ def _default_oscar_paths():
     """Return platform-specific default OSCAR_Data paths to try."""
     home = Path.home()
     if sys.platform == "darwin":
-        return [home / "Documents" / "OSCAR_Data"]
+        return [
+            home / "Documents" / "OSCAR_Data",
+            home / "OSCAR_Data",  # symlink setup moves data here
+        ]
     elif sys.platform == "win32":
         return [home / "Documents" / "OSCAR_Data"]
     else:
